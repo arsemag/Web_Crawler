@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+
+import argparse
+import socket
+import ssl
+
+import argparse
+import socket
+import ssl
+import urllib.parse
+from html.parser import HTMLParser
+from typing import Any
+
+DEFAULT_SERVER = "fakebook.khoury.northeastern.edu"
+DEFAULT_PORT = 443
+
+import sys
+from html.parser import HTMLParser
+
+
+
+class FlagParser(HTMLParser):
+
+    def __init__(self):
+        super().__init__()
+        self.flag = None  ## stores the flag
+        self.captures = False ## flag to tell us if we found a flag
+
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "h3":
+            for name, value in attrs:
+                if name == "class" and value == "secret_flag": ## if this in the attributes : class='secret_flag'
+                    self.captures = True ## YAYY WE FOUND A FLAG
+
+    def handle_endtag(self, tag):
+        if tag == "h3":  ## we reached the end
+            self.captures = False ## have parsed through the flag
+
+    def handle_data(self, data):
+        if self.captures and "FLAG" in data: ## ensure we have a flag that was captured and an actual flag
+            flag = data[6:]
+            print(flag)
+
+
+
+
+def find_and_print_flag(html: str):
+    parser = FlagParser()
+    parser.feed(html)
+
+    """
+       given a html string parse it and check to see if there is a flag. If so print out the flag if there is no flag
+       then do nothing
+       :param html:
+       """
+
+    if parser.flag:
+        print(parser.flag)  # Print the extracted flag
+    else:
+        print("Flag not found.", file=sys.stderr)
+
+
+
+
+
+
+def recv_until_delimiter(socket: socket.socket) -> bytes:
+    """
+    reads from a socket until it reads the \r\n\r\n from the putting all the data into a variable. When it finds the
+    delimiter it will stop reading and break out of the loop. Returns the bytes that were read
+    :param socket:
+    :rtype: bytes
+    """
+    buffer = b""
+    while b"\r\n\r\n" not in buffer:
+        buffer += socket.recv(2048)
+        buffer = buffer.split(b"\r\n\r\n")[0] + b"\r\n\r\n"
+
+    return buffer
+
+
+class Crawler:
+    def __init__(self, args):
+        self.server = args.server
+        self.port = args.port
+        self.username = args.username
+        self.password = args.password
+
+    def run(self):
+        request = """GET /accounts/login/?next=/fakebook/ HTTP/1.1\r
+Host: fakebook.khoury.northeastern.edu\r
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0\r
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r
+Accept-Language: en-US,en;q=0.5\r
+Accept-Encoding: gzip, deflate, br, zstd\r
+Connection: keep-alive\r
+Cookie: csrftoken=k2puPprfwGcax6xuFgEWiBbKniO7Q1CK\r
+Upgrade-Insecure-Requests: 1\r
+Sec-Fetch-Dest: document\r
+Sec-Fetch-Mode: navigate\r
+Sec-Fetch-Site: same-origin\r
+Sec-Fetch-User: ?1\r
+TE: trailers\r\n\r\n"""
+
+        print("Request to %s:%d" % (self.server, self.port))
+        print(request)
+        # mysocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        context = ssl.create_default_context()
+        mysocket = context.wrap_socket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), server_hostname=self.server)
+        mysocket.connect((self.server, self.port))
+        print(type(request.encode('ascii')))
+        mysocket.send(request.encode('ascii'))
+
+        data = recv_until_delimiter(mysocket)
+        if len(data) == 0:
+            print("Response:\nSocket closed by %s" % self.server)
+        else:
+            print("Response:\n%s" % data.decode('ascii'))
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='crawl Fakebook')
+    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
+    parser.add_argument('username', type=str, help="The username to use")
+    parser.add_argument('password', type=str, help="The password to use")
+    args = parser.parse_args()
+    sender = Crawler(args)
+    sender.run()
