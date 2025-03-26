@@ -15,6 +15,16 @@ import sys
 from html.parser import HTMLParser
 
 
+class AnchoredLinksParser(HTMLParser):
+    """
+    TODO
+    Class that parses through HTML and looks for references that links to other pages and adds them to a list and then
+    returns that list
+    """
+
+    pass
+
+
 class FlagParser(HTMLParser):
 
     def __init__(self):
@@ -138,7 +148,7 @@ def login_to_fakebook(sock: socket.socket, host: str, username: str, password: s
 
     redirect_path = post_response['headers'].get("location", "/fakebook/")
     get_redirect_headers = {'Cookie': f"csrftoken={csrf_token}; sessionid={session_id}"}
-    redirect_req = build_request("GET", redirect_path, host, extra_headers=get_redirect_headers)  # TODO
+    redirect_req = build_request("GET", redirect_path, host, extra_headers=get_redirect_headers)
     print(f"Sending redirect GET:\n{redirect_req}")
     sock.send(redirect_req.encode("ascii"))
     redirect_response_data = recv_until_delimiter(sock)
@@ -153,6 +163,8 @@ class Crawler:
         self.port = port
         self.username = username
         self.password = password
+        self.unexplored_pages = list()
+        self.explored_pages = list()
 
     def run(self):
         print(f"Connecting to {self.server}:{self.port}")
