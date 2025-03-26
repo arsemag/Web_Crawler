@@ -1,81 +1,132 @@
-#!/home/ctf-machine/PycharmProjects/web-crawler/.venv/bin/python3
-
-
+#!/usr/bin/env python3
 import argparse
 import socket
 import ssl
-import urllib.parse
-import html.parser
-from typing import Any
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+PASSWORD = os.getenv('PASSWORD')
 
 DEFAULT_SERVER = "fakebook.khoury.northeastern.edu"
 DEFAULT_PORT = 443
 
-def find_and_print_flag(html: str):
-    """
-    given a html string parse it and check to see if there is a flag. If so print out the flag if there is no flag
-    then do nothing
-    :param html:
-    """
-def recv_until_delimiter(socket: socket.socket) -> bytes:
-    """
-    reads from a socket until it reads the \r\n\r\n from the putting all the data into a variable. When it finds the
-    delimiter it will stop reading and break out of the loop. Returns the bytes that were read
-    :param socket:
-    :rtype: bytes
-    """
-    buffer = b""
-    while b"\r\n\r\n" not in buffer:
-        buffer += socket.recv(2048)
-        buffer = buffer.split(b"\r\n\r\n")[0] + b"\r\n\r\n"
 
+def build_request(method, path, host, extra_headers=None, body=""):
+    """Constructs a HTTP request with common headers."""
+    headers = {
+        "Host": host,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "TE": "trailers"
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    if body and "Content-Length" not in headers:
+        headers["Content-Length"] = str(len(body))
+    request_line = f"{method} {path} HTTP/1.1"
+    headers_str = "\r\n".join(f"{k}: {v}" for k, v in headers.items())
+    return f"{request_line}\r\n{headers_str}\r\n\r\n{body}"
+
+
+def parse_response(raw_response):
+    """Converts a raw HTTP response into a dictionary."""
+    header_section, body = raw_response.split("\r\n\r\n", 1)
+    lines = header_section.split("\r\n")
+    status_line = lines[0]
+    headers = {}
+    for line in lines[1:]:
+        if ": " in line:
+            key, value = line.split(": ", 1)
+            headers[key] = headers.get(key, "") + (f"; {value}" if key in headers else value)
+    return {"status_line": status_line, "headers": headers, "body": body}
+
+
+def recv_until_delimiter(sock: socket.socket, delimiter=b"\r\n\r\n") -> bytes:
+    """Reads from a socket until the specified delimiter is found."""
+    buffer = b""
+    while delimiter not in buffer:
+        chunk = sock.recv(2048)
+        if b"HTTP/1.1" not in chunk:
+            break
+        buffer += chunk
+        buffer = buffer.split(b"\r\n\r\n")[0] + b"\r\n\r\n"
     return buffer
 
 
+def login_to_fakebook(sock: socket.socket, host: str, username: str, password: str):
+    # 1. GET the login page
+    get_headers = {"Cookie": "csrftoken=k2puPprfwGcax6xuFgEWiBbKniO7Q1CK"}
+    get_req = build_request("GET", "/accounts/login/?next=/fakebook/", host, extra_headers=get_headers)
+    print(f"Sending GET login page:\n{get_req}")
+    sock.send(get_req.encode("ascii"))
+    response_data = recv_until_delimiter(sock)
+    response = parse_response(response_data.decode("ascii"))
+    print(f"Received response:\n{response_data.decode('ascii')}")
+
+    # Extract CSRF token
+    csrf_token = response['headers'].get('set-cookie', "").split("; ")[0].split("=")[1]
+
+    # 2. POST login credentials
+    body = f"username={username}&password={password}&csrfmiddlewaretoken={csrf_token}&next=%2Ffakebook%2F"
+    post_headers = {
+        "Referer": f"https://{host}/accounts/login/?next=/fakebook/",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": f"https://{host}",
+        "Cookie": f"csrftoken={csrf_token}"
+    }
+    post_req = build_request("POST", "/accounts/login/", host, extra_headers=post_headers, body=body)
+    print(f"Sending POST login details:\n{post_req}")
+    sock.send(post_req.encode("ascii"))
+    post_response_data = recv_until_delimiter(sock)
+    print(f"DEBUG: {post_response_data}")
+    post_response = parse_response(post_response_data.decode("ascii"))
+    print("Received POST response:\n", post_response_data.decode("ascii"))
+
+    # 3. Extract session ID and process redirect
+    session_cookie = post_response['headers'].get('set-cookie', "")
+    session_id = ""
+    if "Lax; " in session_cookie:
+        session_id = session_cookie.split("Lax; ")[1].split('; ')[0].split('=')[1]
+    print("Session ID:", session_id)
+
+    redirect_path = post_response['headers'].get("location", "/fakebook/")
+    get_redirect_headers = {'Cookie': f"csrftoken={csrf_token}; sessionid={session_id}"}
+    redirect_req = build_request("GET", redirect_path, host, extra_headers=get_redirect_headers) #TODO
+    print(f"Sending redirect GET:\n{redirect_req}")
+    sock.send(redirect_req.encode("ascii"))
+    redirect_response_data = recv_until_delimiter(sock)
+    print(f"Received redirect response:\n{redirect_response_data.decode('ascii')}")
+
+    return session_id
+
+
 class Crawler:
-    def __init__(self, args):
-        self.server = args.server
-        self.port = args.port
-        self.username = args.username
-        self.password = args.password
+    def __init__(self, server, port, username, password):
+        self.server = server
+        self.port = port
+        self.username = username
+        self.password = password
 
     def run(self):
-        request = """GET /accounts/login/?next=/fakebook/ HTTP/1.1\r
-Host: fakebook.khoury.northeastern.edu\r
-User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0\r
-Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r
-Accept-Language: en-US,en;q=0.5\r
-Accept-Encoding: gzip, deflate, br, zstd\r
-Connection: keep-alive\r
-Cookie: csrftoken=k2puPprfwGcax6xuFgEWiBbKniO7Q1CK\r
-Upgrade-Insecure-Requests: 1\r
-Sec-Fetch-Dest: document\r
-Sec-Fetch-Mode: navigate\r
-Sec-Fetch-Site: same-origin\r
-Sec-Fetch-User: ?1\r
-TE: trailers\r\n\r\n"""
-
-        print("Request to %s:%d" % (self.server, self.port))
-        print(request)
-        # mysocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        print(f"Connecting to {self.server}:{self.port}")
         context = ssl.create_default_context()
-        mysocket = context.wrap_socket(socket.socket(socket.AF_INET, socket.SOCK_STREAM), server_hostname=self.server)
-        mysocket.connect((self.server, self.port))
-        print(type(request.encode('ascii')))
-        mysocket.send(request.encode('ascii'))
+        with context.wrap_socket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                 server_hostname=self.server) as sock:
+            sock.connect((self.server, self.port))
+            login_to_fakebook(sock, self.server, self.username, self.password)
 
-        data = recv_until_delimiter(mysocket)
-        if len(data) == 0:
-            print("Response:\nSocket closed by %s" % self.server)
-        else:
-            print("Response:\n%s" % data.decode('ascii'))
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='crawl Fakebook')
-    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="The server to crawl")
-    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="The port to use")
-    parser.add_argument('username', type=str, help="The username to use")
-    parser.add_argument('password', type=str, help="The password to use")
+    parser = argparse.ArgumentParser(description='Fakebook crawler')
+    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="Server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="Port to use")
+    parser.add_argument('username', type=str, help="Username for login")
+    parser.add_argument('password', type=str, help="Password for login")
     args = parser.parse_args()
-    sender = Crawler(args)
-    sender.run()
+    crawler = Crawler(args.server, args.port, args.username, args.password)
+    crawler.run()
