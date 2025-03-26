@@ -11,6 +11,48 @@ PASSWORD = os.getenv('PASSWORD')
 DEFAULT_SERVER = "fakebook.khoury.northeastern.edu"
 DEFAULT_PORT = 443
 
+import sys
+from html.parser import HTMLParser
+
+
+class FlagParser(HTMLParser):
+
+    def __init__(self):
+        super().__init__()
+        self.flag = None  ## stores the flag
+        self.captures = False  ## flag to tell us if we found a flag
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "h3":
+            for name, value in attrs:
+                if name == "class" and value == "secret_flag":  ## if this in the attributes : class='secret_flag'
+                    self.captures = True  ## YAYY WE FOUND A FLAG
+
+    def handle_endtag(self, tag):
+        if tag == "h3":  ## we reached the end
+            self.captures = False  ## have parsed through the flag
+
+    def handle_data(self, data):
+        if self.captures and "FLAG" in data:  ## ensure we have a flag that was captured and an actual flag
+            flag = data[6:]
+            print(flag)
+
+
+def find_and_print_flag(html: str):
+    parser = FlagParser()
+    parser.feed(html)
+
+    """
+       given a html string parse it and check to see if there is a flag. If so print out the flag if there is no flag
+       then do nothing
+       :param html:
+       """
+
+    if parser.flag:
+        print(parser.flag)  # Print the extracted flag
+    else:
+        print("Flag not found.", file=sys.stderr)
+
 
 def build_request(method, path, host, extra_headers=None, body=""):
     """Constructs a HTTP request with common headers."""
@@ -96,7 +138,7 @@ def login_to_fakebook(sock: socket.socket, host: str, username: str, password: s
 
     redirect_path = post_response['headers'].get("location", "/fakebook/")
     get_redirect_headers = {'Cookie': f"csrftoken={csrf_token}; sessionid={session_id}"}
-    redirect_req = build_request("GET", redirect_path, host, extra_headers=get_redirect_headers) #TODO
+    redirect_req = build_request("GET", redirect_path, host, extra_headers=get_redirect_headers)  # TODO
     print(f"Sending redirect GET:\n{redirect_req}")
     sock.send(redirect_req.encode("ascii"))
     redirect_response_data = recv_until_delimiter(sock)
