@@ -4,6 +4,9 @@ import socket
 import ssl
 import os
 from dotenv import load_dotenv
+import sys
+from html.parser import HTMLParser
+import  gzip
 
 load_dotenv()
 PASSWORD = os.getenv('PASSWORD')
@@ -11,8 +14,7 @@ PASSWORD = os.getenv('PASSWORD')
 DEFAULT_SERVER = "fakebook.khoury.northeastern.edu"
 DEFAULT_PORT = 443
 
-import sys
-from html.parser import HTMLParser
+
 
 
 class AnchoredLinksParser(HTMLParser):
@@ -101,13 +103,18 @@ def parse_response(raw_response):
 def recv_until_delimiter(sock: socket.socket, delimiter=b"\r\n\r\n") -> bytes:
     """Reads from a socket until the specified delimiter is found."""
     buffer = b""
+    body = b""
     while delimiter not in buffer:
         chunk = sock.recv(2048)
+        print(f"DEBUG: {chunk}")
         if b"HTTP/1.1" not in chunk:
             break
         buffer += chunk
-        buffer = buffer.split(b"\r\n\r\n")[0] + b"\r\n\r\n"
-    return buffer
+        headers = buffer.split(b"\r\n\r\n")[0] + b"\r\n\r\n"
+        body = buffer.split(b"\r\n\r\n")[1]
+    decompressed_bytes = gzip.decompress(body)
+    print(f'DEBUG: length = {len(decompressed_bytes.decode("ascii"))}, {decompressed_bytes.decode("ascii")}')
+    return headers
 
 
 def login_to_fakebook(sock: socket.socket, host: str, username: str, password: str):
@@ -154,7 +161,8 @@ def login_to_fakebook(sock: socket.socket, host: str, username: str, password: s
     redirect_response_data = recv_until_delimiter(sock)
     print(f"Received redirect response:\n{redirect_response_data.decode('ascii')}")
 
-    return session_id
+    redirect_response = parse_response(redirect_response_data.decode("ascii"))
+    return redirect_response['body']
 
 
 class Crawler:
@@ -172,7 +180,8 @@ class Crawler:
         with context.wrap_socket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
                                  server_hostname=self.server) as sock:
             sock.connect((self.server, self.port))
-            login_to_fakebook(sock, self.server, self.username, self.password)
+            html_content = login_to_fakebook(sock, self.server, self.username, self.password)
+            print("HTML Content of the final response:\n", html_content)
 
 
 if __name__ == "__main__":
