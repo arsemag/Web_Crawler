@@ -114,8 +114,14 @@ def parse_response(raw_response: str) -> dict:
 
 def recv_until_delimiter(sock: socket.socket, delimiter: bytes = b"\r\n\r\n") -> bytes:
     """
-    Reads from a socket until the specified delimiter is encountered.
-    Attempts to decompress the body if gzip-encoded.
+    Receives data from a socket until a specified delimiter is encountered.
+
+    Args:
+        sock (socket.socket): The socket from which to receive data.
+        delimiter (bytes, optional): The delimiter to look for in the received data. Defaults to b"\r\n\r\n".
+
+    Returns:
+        bytes: The received data, including the delimiter. If the data after the delimiter is gzip-compressed, it is decompressed.
     """
     buffer = b""
     while delimiter not in buffer:
