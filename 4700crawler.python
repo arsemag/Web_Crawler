@@ -19,12 +19,26 @@ DEFAULT_PORT = 443
 
 class AnchoredLinksParser(HTMLParser):
     """
-    TODO
-    Class that parses through HTML and looks for references that links to other pages and adds them to a list and then
-    returns that list
+    Class that parses through HTML and looks for <a> tags that link to other pages.
+    It collects all href attributes and stores them in a list.
     """
 
-    pass
+    def __init__(self):
+        super().__init__()  # Correct way to initialize the parent class
+        self.links = []  # List to store extracted URLs
+        self.domain = "https://fakebook.khoury.northeastern.edu"
+
+    def handle_starttag(self, tag, attrs):
+        """Extracts URLs from <a> tags."""
+        if tag == "a":  # Look for a tag
+            for attr, value in attrs:
+                if attr == "href":  # Extract href attribute
+                    if value.startswith(self.domain):
+                        self.links.append(value)
+
+    def get_links(self):
+        """Returns the list of extracted links."""
+        return self.links
 
 
 class FlagParser(HTMLParser):
