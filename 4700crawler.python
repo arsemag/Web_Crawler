@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+import argparse
+import socket
+import ssl
+import os
+from dotenv import load_dotenv
+import sys
+from html.parser import HTMLParser
+import  gzip
+
+load_dotenv()
+PASSWORD = os.getenv('PASSWORD')
+
+DEFAULT_SERVER = "fakebook.khoury.northeastern.edu"
+DEFAULT_PORT = 443
+
+
+
+
+class AnchoredLinksParser(HTMLParser):
+    """
+    Class that parses through HTML and looks for <a> tags that link to other pages.
+    It collects all href attributes and stores them in a list.
+    """
+
+    def __init__(self):
+        super().__init__()  # Correct way to initialize the parent class
+        self.links = []  # List to store extracted URLs
+        self.domain = "https://fakebook.khoury.northeastern.edu"
+
+    def handle_starttag(self, tag, attrs):
+        """Extracts URLs from <a> tags."""
+        if tag == "a":  # Look for a tag
+            for attr, value in attrs:
+                if attr == "href":  # Extract href attribute
+                    if value.startswith(self.domain):
+                        self.links.append(value)
+
+    def get_links(self):
+        """Returns the list of extracted links."""
+        return self.links
+
+
+class FlagParser(HTMLParser):
+
+    def __init__(self):
+        super().__init__()
+        self.flag = None  ## stores the flag
+        self.captures = False  ## flag to tell us if we found a flag
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "h3":
+            for name, value in attrs:
+                if name == "class" and value == "secret_flag":  ## if this in the attributes : class='secret_flag'
+                    self.captures = True  ## YAYY WE FOUND A FLAG
+
+    def handle_endtag(self, tag):
+        if tag == "h3":  ## we reached the end
+            self.captures = False  ## have parsed through the flag
+
+    def handle_data(self, data):
+        if self.captures and "FLAG" in data:  ## ensure we have a flag that was captured and an actual flag
+            flag = data[6:]
+            print(flag)
+
+
+def find_and_print_flag(html: str):
+    parser = FlagParser()
+    parser.feed(html)
+
+    """
+       given a html string parse it and check to see if there is a flag. If so print out the flag if there is no flag
+       then do nothing
+       :param html:
+       """
+
+    if parser.flag:
+        print(parser.flag)  # Print the extracted flag
+    else:
+        print("Flag not found.", file=sys.stderr)
+
+
+def build_request(method, path, host, extra_headers=None, body=""):
+    """Constructs a HTTP request with common headers."""
+    headers = {
+        "Host": host,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "TE": "trailers"
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    if body and "Content-Length" not in headers:
+        headers["Content-Length"] = str(len(body))
+    request_line = f"{method} {path} HTTP/1.1"
+    headers_str = "\r\n".join(f"{k}: {v}" for k, v in headers.items())
+    return f"{request_line}\r\n{headers_str}\r\n\r\n{body}"
+
+
+def parse_response(raw_response):
+    """Converts a raw HTTP response into a dictionary."""
+    header_section, body = raw_response.split("\r\n\r\n", 1)
+    lines = header_section.split("\r\n")
+    status_line = lines[0]
+    headers = {}
+    for line in lines[1:]:
+        if ": " in line:
+            key, value = line.split(": ", 1)
+            headers[key] = headers.get(key, "") + (f"; {value}" if key in headers else value)
+    return {"status_line": status_line, "headers": headers, "body": body}
+
+
+def recv_until_delimiter(sock: socket.socket, delimiter=b"\r\n\r\n") -> bytes:
+    """Reads from a socket until the specified delimiter is found."""
+    buffer = b""
+    body = b""
+    while delimiter not in buffer:
+        chunk = sock.recv(2048)
+        print(f"DEBUG: {chunk}")
+        if b"HTTP/1.1" not in chunk:
+            break
+        buffer += chunk
+        headers = buffer.split(b"\r\n\r\n")[0] + b"\r\n\r\n"
+        body = buffer.split(b"\r\n\r\n")[1]
+    decompressed_bytes = gzip.decompress(body)
+    print(f'DEBUG: length = {len(decompressed_bytes.decode("ascii"))}, {decompressed_bytes.decode("ascii")}')
+    return headers
+
+
+def login_to_fakebook(sock: socket.socket, host: str, username: str, password: str):
+    # 1. GET the login page
+    get_headers = {"Cookie": "csrftoken=k2puPprfwGcax6xuFgEWiBbKniO7Q1CK"}
+    get_req = build_request("GET", "/accounts/login/?next=/fakebook/", host, extra_headers=get_headers)
+    print(f"Sending GET login page:\n{get_req}")
+    sock.send(get_req.encode("ascii"))
+    response_data = recv_until_delimiter(sock)
+    response = parse_response(response_data.decode("ascii"))
+    print(f"Received response:\n{response_data.decode('ascii')}")
+
+    # Extract CSRF token
+    csrf_token = response['headers'].get('set-cookie', "").split("; ")[0].split("=")[1]
+
+    # 2. POST login credentials
+    body = f"username={username}&password={password}&csrfmiddlewaretoken={csrf_token}&next=%2Ffakebook%2F"
+    post_headers = {
+        "Referer": f"https://{host}/accounts/login/?next=/fakebook/",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": f"https://{host}",
+        "Cookie": f"csrftoken={csrf_token}"
+    }
+    post_req = build_request("POST", "/accounts/login/", host, extra_headers=post_headers, body=body)
+    print(f"Sending POST login details:\n{post_req}")
+    sock.send(post_req.encode("ascii"))
+    post_response_data = recv_until_delimiter(sock)
+    print(f"DEBUG: {post_response_data}")
+    post_response = parse_response(post_response_data.decode("ascii"))
+    print("Received POST response:\n", post_response_data.decode("ascii"))
+
+    # 3. Extract session ID and process redirect
+    session_cookie = post_response['headers'].get('set-cookie', "")
+    session_id = ""
+    if "Lax; " in session_cookie:
+        session_id = session_cookie.split("Lax; ")[1].split('; ')[0].split('=')[1]
+    print("Session ID:", session_id)
+
+    redirect_path = post_response['headers'].get("location", "/fakebook/")
+    get_redirect_headers = {'Cookie': f"csrftoken={csrf_token}; sessionid={session_id}"}
+    redirect_req = build_request("GET", redirect_path, host, extra_headers=get_redirect_headers)
+    print(f"Sending redirect GET:\n{redirect_req}")
+    sock.send(redirect_req.encode("ascii"))
+    redirect_response_data = recv_until_delimiter(sock)
+    print(f"Received redirect response:\n{redirect_response_data.decode('ascii')}")
+
+    redirect_response = parse_response(redirect_response_data.decode("ascii"))
+    return redirect_response['body']
+
+
+class Crawler:
+    def __init__(self, server, port, username, password):
+        self.server = server
+        self.port = port
+        self.username = username
+        self.password = password
+        self.unexplored_pages = list()
+        self.explored_pages = list()
+
+    def run(self):
+        print(f"Connecting to {self.server}:{self.port}")
+        context = ssl.create_default_context()
+        with context.wrap_socket(socket.socket(socket.AF_INET, socket.SOCK_STREAM),
+                                 server_hostname=self.server) as sock:
+            sock.connect((self.server, self.port))
+            html_content = login_to_fakebook(sock, self.server, self.username, self.password)
+            print("HTML Content of the final response:\n", html_content)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Fakebook crawler')
+    parser.add_argument('-s', dest="server", type=str, default=DEFAULT_SERVER, help="Server to crawl")
+    parser.add_argument('-p', dest="port", type=int, default=DEFAULT_PORT, help="Port to use")
+    parser.add_argument('username', type=str, help="Username for login")
+    parser.add_argument('password', type=str, help="Password for login")
+    args = parser.parse_args()
+    crawler = Crawler(args.server, args.port, args.username, args.password)
+    crawler.run()
