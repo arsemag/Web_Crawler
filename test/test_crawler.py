@@ -1,5 +1,9 @@
 from unittest import TestCase
-from crawler import build_request
+import unittest
+from unittest.mock import MagicMock, Mock
+from crawler import build_request, recv_until_delimiter
+import socket
+import gzip
 class Test(TestCase):
     def test_get_request(self):
         expected_request = (
@@ -60,3 +64,51 @@ class Test(TestCase):
             "TE: trailers\r\n\r\n"
         )
         self.assertEqual(build_request("POST", "/submit", "example.com"), expected_request)
+
+
+class TestRecvUntilDelimiter(unittest.TestCase):
+    def test_recv_until_delimiter(self):
+        # Mock socket
+        mock_socket = Mock(spec=socket.socket)
+
+        # Simulate receiving data in chunks
+        body = gzip.compress(b"Hello, world!")
+        mock_socket.recv = MagicMock(side_effect=[
+            b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n" + body + b""
+        ])
+
+        # Expected result
+        expected_result = b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\nHello, world!"
+
+        # Call the function
+        result = recv_until_delimiter(mock_socket)
+
+        # Assert the result
+        self.assertEqual(expected_result, result)
+
+    def test_receive_until_delimiter_with_html(self):
+        with open("test_html.html", "rb") as file:
+            html = file.read()
+        compressed_html = gzip.compress(html)
+        # print(gzip.compress(html))
+        # print("DEBUG")
+        # print(gzip.decompress(compressed_html[:846]).decode('ascii'))
+        #
+        # gzipped_html = gzip.compress(html)
+
+        # Mock socket
+        mock_socket = Mock(spec=socket.socket)
+
+        # Simulate receiving data in chunks
+        mock_socket.recv = MagicMock(side_effect=[
+            b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n" + compressed_html + b""
+        ])
+
+        # Expected result
+        expected_result = b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n" + gzip.decompress(compressed_html) + b""
+
+        # Call the function
+        result = recv_until_delimiter(mock_socket)
+
+        # Assert the result
+        self.assertEqual(expected_result, result)

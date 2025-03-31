@@ -6,6 +6,8 @@ import os
 import sys
 import gzip
 from html.parser import HTMLParser
+from os import MFD_ALLOW_SEALING
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,7 +27,8 @@ class AnchoredLinksParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag == "a":
             for name, value in attrs:
-                if name == "href":
+                if name == "href" and "fakebook" in value:
+                    # print(f"DEBUG:\n{value}")
                     self.links.append(value)
 
 class FlagParser(HTMLParser):
@@ -51,7 +54,12 @@ class FlagParser(HTMLParser):
             # Assumes flag text starts after "FLAG: " (adjust as needed)
             self.flag = data.strip()[6:]
 
-def extract_flag(html: str) -> None:
+def extract_links(html: str) -> list:
+    parser = AnchoredLinksParser()
+    parser.feed(html)
+    return parser.links
+
+def extract_flag(html: str) -> bool:
     """
     Parses the provided HTML for a flag.
     Prints the flag if found, otherwise prints an error to stderr.
@@ -59,23 +67,16 @@ def extract_flag(html: str) -> None:
     parser = FlagParser()
     parser.feed(html)
     if parser.flag:
-        print(f"Flag found: {parser.flag}")
+        print(parser.flag)
+        return True
     else:
-        print("Flag not found.", file=sys.stderr)
+        return False
+    # else:
+        # print("Flag not found.", file=sys.stderr)
 
 def build_request(method: str, path: str, host: str, extra_headers: dict = None, body: str = "") -> str:
     """
     Constructs an HTTP request string with common headers.
-
-    Args:
-        method (str): The HTTP method (e.g., 'GET', 'POST').
-        path (str): The path of the resource being requested.
-        host (str): The host name of the server.
-        extra_headers (dict, optional): Additional headers to include in the request. Defaults to None.
-        body (str, optional): The body of the request, if any. Defaults to an empty string.
-
-    Returns:
-        str: The constructed HTTP request string.
     """
     headers = {
         "Host": host,
@@ -96,9 +97,8 @@ def build_request(method: str, path: str, host: str, extra_headers: dict = None,
 
 def parse_response(raw_response: str) -> dict:
     """
-    Parses a raw HTTP response string into its status, headers, and body.
+    Parses a raw HTTP response string into its components.
     """
-    print(f"DEBUG:\n{raw_response}")
     try:
         header_section, body = raw_response.split("\r\n\r\n", 1)
     except ValueError:
@@ -115,96 +115,113 @@ def parse_response(raw_response: str) -> dict:
 def recv_until_delimiter(sock: socket.socket, delimiter: bytes = b"\r\n\r\n") -> bytes:
     """
     Receives data from a socket until a specified delimiter is encountered.
-
-    Args:
-        sock (socket.socket): The socket from which to receive data.
-        delimiter (bytes, optional): The delimiter to look for in the received data. Defaults to b"\r\n\r\n".
-
-    Returns:
-        bytes: The received data, including the delimiter. If the data after the delimiter is gzip-compressed, it is decompressed.
     """
     buffer = b""
-    while delimiter not in buffer:
+    while True:
         chunk = sock.recv(2048)
-        if not chunk:
-            break
         buffer += chunk
-    parts = buffer.split(delimiter, 1)
-    if len(parts) == 2:
-        headers, body = parts
-        try:
-            body = gzip.decompress(body)
-        except (OSError, EOFError):
-            # Not gzip-compressed; leave as is
-            pass
-        return headers + delimiter + body
-    return buffer
+        if delimiter in buffer:
+            break
 
-def perform_login(sock: socket.socket, host: str, username: str, password: str) -> str:
+    header_part, remainder = buffer.split(delimiter, 1)
+    responses = parse_response(header_part.decode("ascii"))
+    try:
+        content_length = int(responses["headers"]["content-length"])
+    except KeyError:
+        print("key_error!", file=sys.stderr)
+    body_data = remainder
+    bytes_needed = content_length - len(body_data)
+    while bytes_needed > 0:
+        chunk = sock.recv(min(2048, bytes_needed))
+        body_data += chunk
+        bytes_needed = content_length - len(body_data)
+
+    return header_part + delimiter + body_data
+
+class FakebookSession:
     """
-    Logs into Fakebook via the provided socket connection.
-    Returns the body of the redirect page after login.
+    A session that holds the CSRF token and session ID.
+    This class encapsulates the connection, login, and subsequent GET requests
+    using the stored cookies.
     """
-    # GET login page
-    get_headers = {"Cookie": "csrftoken=k2puPprfwGcax6xuFgEWiBbKniO7Q1CK"}
-    get_req = build_request("GET", "/accounts/login/?next=/fakebook/", host, extra_headers=get_headers)
-    print(f"Sending GET login page:\n{get_req}")
-    sock.sendall(get_req.encode("ascii"))
-    response_data = recv_until_delimiter(sock)
-    response_text = response_data.decode("ascii", errors="replace")
-    response = parse_response(response_text)
-    print(f"Received response:\n{response_text}")
+    def __init__(self, server: str, port: int):
+        self.server = server
+        self.port = port
+        self.csrf_token = None
+        self.session_id = None
+        self.secure_sock = None
 
-    # Extract CSRF token from the set-cookie header
-    csrf_token = ""
-    csrf_cookie = response['headers'].get('set-cookie', "")
-    if csrf_cookie:
-        token_parts = csrf_cookie.split("; ")[0].split("=")
-        if len(token_parts) == 2:
-            csrf_token = token_parts[1]
+    def connect(self):
+        context = ssl.create_default_context()
+        sock = socket.create_connection((self.server, self.port))
+        self.secure_sock = context.wrap_socket(sock, server_hostname=self.server)
 
-    # POST login credentials
-    body = f"username={username}&password={password}&csrfmiddlewaretoken={csrf_token}&next=%2Ffakebook%2F"
-    post_headers = {
-        "Referer": f"https://{host}/accounts/login/?next=/fakebook/",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Origin": f"https://{host}",
-        "Cookie": f"csrftoken={csrf_token}"
-    }
-    post_req = build_request("POST", "/accounts/login/", host, extra_headers=post_headers, body=body)
-    print(f"Sending POST login details:\n{post_req}")
-    sock.sendall(post_req.encode("ascii"))
-    post_response_data = recv_until_delimiter(sock)
-    post_response_text = post_response_data.decode("ascii", errors="replace")
-    print(f"Received POST response:\n{post_response_text}")
-    post_response = parse_response(post_response_text)
+    def login(self, username: str, password: str) -> str:
+        # GET login page to retrieve initial CSRF token
+        get_req = build_request("GET", "/accounts/login/", self.server)
+        self.secure_sock.sendall(get_req.encode("ascii"))
+        response_data = recv_until_delimiter(self.secure_sock)
+        response_text = response_data.decode("ascii", errors="replace")
+        response = parse_response(response_text)
+        csrf_token = ""
+        csrf_cookie = response['headers'].get('set-cookie', "")
+        if csrf_cookie:
+            token_parts = csrf_cookie.split("; ")[0].split("=")
+            if len(token_parts) == 2:
+                csrf_token = token_parts[1]
+        self.csrf_token = csrf_token
 
-    # Extract session ID from the set-cookie header
-    session_id = ""
-    session_cookie = post_response['headers'].get('set-cookie', "")
-    if "Lax; " in session_cookie:
-        try:
-            session_id = session_cookie.split("Lax; ")[1].split('; ')[0].split('=')[1]
-        except IndexError:
-            session_id = ""
+        # POST login credentials with CSRF token
+        body = f"username={username}&password={password}&csrfmiddlewaretoken={self.csrf_token}&next=%2Ffakebook%2F"
+        post_headers = {
+            "Referer": f"https://{self.server}/accounts/login/?next=/fakebook/",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": f"https://{self.server}",
+            "Cookie": f"csrftoken={self.csrf_token}"
+        }
+        post_req = build_request("POST", "/accounts/login/", self.server, extra_headers=post_headers, body=body)
+        self.secure_sock.sendall(post_req.encode("ascii"))
+        post_response_data = recv_until_delimiter(self.secure_sock)
+        post_response_text = post_response_data.decode("ascii", errors="replace")
+        post_response = parse_response(post_response_text)
 
-    print(f"Session ID: {session_id}")
+        # Extract session ID from response cookies
+        session_id = ""
+        session_cookie = post_response['headers'].get('set-cookie', "")
+        if "sessionid=" in session_cookie:
+            try:
+                session_id = session_cookie.split("; ")[0].split('=')[1]
+            except IndexError:
+                session_id = ""
+        self.session_id = session_id
 
-    # Follow redirect after login
-    redirect_path = post_response['headers'].get("location", "/fakebook/")
-    get_redirect_headers = {'Cookie': f"csrftoken={csrf_token}; sessionid={session_id}"}
-    redirect_req = build_request("GET", redirect_path, host, extra_headers=get_redirect_headers)
-    print(f"Sending redirect GET:\n{redirect_req}")
-    sock.sendall(redirect_req.encode("ascii"))
-    redirect_response_data = recv_until_delimiter(sock)
-    redirect_response_text = redirect_response_data.decode("ascii", errors="replace")
-    print(f"Received redirect response:\n{redirect_response_text}")
-    redirect_response = parse_response(redirect_response_text)
-    return redirect_response['body']
+        # Follow redirect after login using updated cookies
+        redirect_path = post_response['headers'].get("location", "/fakebook/")
+        redirect_headers = {'Cookie': f"csrftoken={self.csrf_token}; sessionid={self.session_id}"}
+        redirect_req = build_request("GET", redirect_path, self.server, extra_headers=redirect_headers)
+        self.secure_sock.sendall(redirect_req.encode("ascii"))
+        redirect_response_data = recv_until_delimiter(self.secure_sock)
+        redirect_response_text = redirect_response_data.decode("ascii", errors="replace")
+        redirect_response = parse_response(redirect_response_text)
+        return redirect_response['body']
+
+    def send_get(self, path: str, extra_headers: dict = None) -> dict:
+        """
+        Sends a GET request to the specified path including the stored cookies.
+        """
+        headers = extra_headers.copy() if extra_headers else {}
+        # Automatically include the CSRF and session cookies if available.
+        if self.csrf_token or self.session_id:
+            headers["Cookie"] = f"csrftoken={self.csrf_token}; sessionid={self.session_id}"
+        request = build_request("GET", path, self.server, extra_headers=headers)
+        self.secure_sock.sendall(request.encode("ascii"))
+        response_data = recv_until_delimiter(self.secure_sock)
+        return parse_response(response_data.decode("ascii"))
 
 class Crawler:
     """
-    A simple crawler that connects to the given server, logs in, and processes the login response.
+    A simple crawler that connects to the given server, logs in, and
+    processes the login response as well as subsequent pages using the persistent session.
     """
     def __init__(self, server: str, port: int, username: str, password: str):
         self.server = server
@@ -215,14 +232,45 @@ class Crawler:
         self.explored_pages = []
 
     def run(self):
-        print(f"Connecting to {self.server}:{self.port}")
-        context = ssl.create_default_context()
-        with socket.create_connection((self.server, self.port)) as sock:
-            with context.wrap_socket(sock, server_hostname=self.server) as secure_sock:
-                body = perform_login(secure_sock, self.server, self.username, self.password)
-                # Process the returned HTML (for example, extract a flag)
-                extract_flag(body)
-                # Future work: Use AnchoredLinksParser to find and crawl additional pages.
+        # print("program started")
+        flags_found = 0
+        # print(f"Connecting to {self.server}:{self.port}")
+        session = FakebookSession(self.server, self.port)
+        session.connect()
+
+        # Login and capture the returned page (e.g., home or redirect page)
+        body = session.login(self.username, self.password)
+        extract_flag(body)
+
+        self.explored_pages.extend(['/accounts/login/', '/fakebook/'])
+        links = extract_links(body)
+        for link in links:
+            if link not in self.explored_pages:
+                self.unexplored_pages.append(link)
+
+        while self.unexplored_pages:
+            link = self.unexplored_pages.pop(0)
+            if link in self.explored_pages:
+                continue
+            self.explored_pages.append(link)
+            response = session.send_get(link)
+            # print(f"REQUEST to {link}")
+            # print(f"RESPONSE:\n{response}")
+            if response['status_line'] == "HTTP/1.1 200 OK":
+                if extract_flag(response['body']):
+                    flags_found += 1
+                if flags_found == 5:
+                    # print("Program ended")
+                    exit(0)
+                new_links = extract_links(response['body'])
+                for new_link in new_links:
+                    if new_link not in self.explored_pages and new_link not in self.unexplored_pages:
+                        # print(f'DEBUG: adding {new_link}')
+                        # print(f'DEBUG: \nlength of explored pages: {len(self.explored_pages)}\nlength of unexplored pages: {len(self.unexplored_pages)}')
+                        self.unexplored_pages.append(new_link)
+            elif response['status_line'] == "HTTP/1.1 302 Found":
+                # For redirects, add the location to the front of the queue.
+                self.unexplored_pages.insert(0, response['headers'].get('location', ''))
 
 def main():
     parser = argparse.ArgumentParser(description="Fakebook crawler")
