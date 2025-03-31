@@ -6,11 +6,11 @@ import os
 import sys
 import gzip
 from html.parser import HTMLParser
-from os import MFD_ALLOW_SEALING
+# from os import MFD_ALLOW_SEALING
 
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
-load_dotenv()
+# load_dotenv()
 
 DEFAULT_SERVER = "fakebook.khoury.northeastern.edu"
 DEFAULT_PORT = 443
