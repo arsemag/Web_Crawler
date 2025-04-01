@@ -4,7 +4,7 @@
 This Python programs is a web crawler designed to log into Fakebook, a simulated website hosted at Northeastern University, and extract hidden secret flags. The program uses a combination of HTTP requests, HTML parsing, and session handling to navigate through the website, locate hidden flags, and print them.
 
 
-*** Classes ***
+--- Classes ---
 
 AnchoredLinksParser(HTMLParser): Parses HTML to extract anchored links (href attributes).This parser collects links found in <a> tags.
 
@@ -15,7 +15,7 @@ FakebookSession: Handles secure login and maintains session cookies.
 Crawler: Manages the crawling process, keeping track of explored and unexplored links.
 
 
-*** Methods ***
+----- Methods -----
 extract_links(html): Parses HTML pages to find new links.
 
 extract_flag(html): Extracts and prints flags if found.
