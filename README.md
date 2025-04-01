@@ -6,7 +6,7 @@ This Python program is a web crawler designed to log into Fakebook, a simulated 
 Classes
 AnchoredLinksParser (HTMLParser): Parses HTML to extract anchored links (href attributes). This parser collects links found in <a> tags.
 
-FlagParser (HTMLParser): Parses HTML to extract the secret flag. When a <h3> tag with class "secret_flag" is encountered, it captures the flag text.
+FlagParser (HTMLParser): Parses HTML to extract the secret flag. When a "<h3>" tag with class "secret_flag" is encountered, it captures the flag text.
 
 FakebookSession: Handles secure login and maintains session cookies.
 
